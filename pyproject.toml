@@ -1,0 +1,21 @@
+[project]
+name = "mad-drift-rl"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ProgCat", email = "progcat@protonmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.3.3",
+    "pillow>=11.3.0",
+    "pywin32>=311",
+]
+
+[project.scripts]
+mad-drift-rl = "mad_drift_rl:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
