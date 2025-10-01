@@ -2,7 +2,7 @@
 
 ---
 
-### Nox Prep. Instructions
+## Nox Prep. Instructions
 
 1. Install Nox
 
@@ -30,8 +30,12 @@
 
 5. Launch the emulator
 
-6. After the emulator is started, install Mad Drift APK
+6. After the emulator is started, install Mad Drift
 
 7. Enable ADB debugging in the emulator settings by going to Settings > About tablet > Tap "Build number" 7 times to enable Developer options. Then go to Developer options and enable "USB debugging".
 
 ---
+
+## Training 
+
+1. Launch Mad Drift in the emulator
