@@ -115,7 +115,7 @@ class Trainer:
         self.optimizer = optim.Adam(self.model.parameters(), lr=config.learning_rate)
 
         # Initialize model with dummy input to setup lazy layers
-        dummy_obs = torch.zeros(1, 1, 133, 108).to(self.device)
+        dummy_obs = torch.zeros(1, 2, 133, 108).to(self.device)
         dummy_memory = torch.zeros(1, 16, 128).to(self.device)
         with torch.no_grad():
             self.model(dummy_obs, dummy_memory)
@@ -148,7 +148,8 @@ class Trainer:
         start_time = time_module.time()
 
         obs = self.env.reset()
-        obs_tensor = torch.FloatTensor(obs).unsqueeze(0).unsqueeze(0).to(self.device)
+        # obs shape: (133, 108, 2) -> permute to (2, 133, 108) -> add batch dim: (1, 2, 133, 108)
+        obs_tensor = torch.FloatTensor(obs).permute(2, 0, 1).unsqueeze(0).to(self.device)
         memory_state = torch.zeros(1, self.model.n_latent, self.model.feature_dim).to(self.device)
 
         episode_reward = 0
@@ -186,10 +187,26 @@ class Trainer:
             # Visualize observation AFTER step (only if not done, to avoid showing game over screen)
             # Note: we visualize the observation that was used to make the decision
             if not done:
-                obs_display = obs.copy()
-                obs_display = cv2.cvtColor(obs_display, cv2.COLOR_GRAY2BGR)
-                # Resize to original screenshot size (540x960)
-                obs_display = cv2.resize(obs_display, (self.env.width, self.env.height), interpolation=cv2.INTER_NEAREST)
+                # obs shape: (133, 108, 2) - channel 0 is car, channel 1 is environment
+                car_channel = obs[:, :, 0]  # (133, 108) binary car mask
+                env_channel = obs[:, :, 1]  # (133, 108) environment grayscale
+
+                # Create RGB visualization: Bright green for car, White for environment
+                obs_display = np.zeros((133, 108, 3), dtype=np.float32)
+
+                # Create car mask (boolean)
+                car_mask = car_channel > 0.5
+
+                # Set environment to white (where there's no car)
+                obs_display[:, :, 0] = np.where(car_mask, 0, env_channel)  # Red = environment only
+                obs_display[:, :, 1] = np.where(car_mask, 1.0, env_channel)  # Green = car (full intensity) or environment
+                obs_display[:, :, 2] = np.where(car_mask, 0, env_channel)  # Blue = environment only
+
+                # Convert to uint8 and resize
+                obs_display = (obs_display * 255).astype(np.uint8)
+                # Resize to match original game view aspect ratio (540x665, cropped from screenshot[90:755, :])
+                obs_display = cv2.resize(obs_display, (540, 665), interpolation=cv2.INTER_NEAREST)
+
                 # Add action text with interval
                 cv2.putText(obs_display, f"Action: {action_name}", (20, 40),
                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
@@ -254,7 +271,8 @@ class Trainer:
                 raise RuntimeError("Received None observation but episode not marked as done - this should not happen")
 
             obs = next_obs
-            obs_tensor = torch.FloatTensor(obs).unsqueeze(0).unsqueeze(0).to(self.device)
+            # obs shape: (133, 108, 2) -> permute to (2, 133, 108) -> add batch dim: (1, 2, 133, 108)
+            obs_tensor = torch.FloatTensor(obs).permute(2, 0, 1).unsqueeze(0).to(self.device)
 
     def train_step(self):
         """Perform PPO update"""

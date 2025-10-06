@@ -49,7 +49,7 @@ class AgentModel(nn.Module):
         self.n_latent = n_latent
 
         self.visual_encoder = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=8, stride=4),
+            nn.Conv2d(2, 32, kernel_size=8, stride=4),
             nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2),
             nn.ReLU(),

@@ -11,7 +11,7 @@ from enum import IntEnum
 
 from mad_drift_rl.nox_player import NoxPlayer, EmulatorInfo
 from mad_drift_rl.positions import SCORE_REGION, CAR_SAMPLE_REGION, FLOOR_SAMPLE_REGIONS
-from mad_drift_rl.vision_utils import locate, ocr, sample_color, normalize_observation
+from mad_drift_rl.vision_utils import locate, ocr, sample_color, normalize_observation, get_closest_floor_color
 
 class ActionSpace(IntEnum):
     NoOp = 0
@@ -146,9 +146,12 @@ class MadDriftEnv:
 
                 # Sample floor color from multiple clean regions (average for robustness)
                 floor_samples = [sample_color(screenshot, region) for region in FLOOR_SAMPLE_REGIONS]
-                self.floor_color = np.mean(floor_samples, axis=0).astype(np.uint8)
+                sampled_floor_color = np.mean(floor_samples, axis=0).astype(np.uint8)
 
-                logging.info(f"Theme colors sampled - Floor: {self.floor_color}, Car: {self.car_color}")
+                # Get the closest matching hardcoded floor color
+                self.floor_color = get_closest_floor_color(sampled_floor_color)
+
+                logging.info(f"Theme colors sampled - Sampled: {sampled_floor_color}, Matched: {self.floor_color}, Car: {self.car_color}")
 
                 # Return first observation with normalization
                 return self.make_observation(screenshot)
