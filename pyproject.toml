@@ -11,7 +11,11 @@ dependencies = [
     "numpy>=2.3.3",
     "opencv-python>=4.11.0.86",
     "pillow>=11.3.0",
+    "pytesseract>=0.3.13",
     "pywin32>=311",
+    "rich>=13.9.4",
+    "torch>=2.8.0",
+    "wandb>=0.19.1",
 ]
 
 [project.scripts]

@@ -1,5 +1,8 @@
 import subprocess
 import logging
+import win32api
+import win32con
+import time
 from dataclasses import dataclass
 
 def nox(*args, **kwargs):
@@ -51,7 +54,7 @@ class NoxPlayer:
                         top_window_handle=int(info[3], 16),
                         toolbar_window_handle=int(info[4], 16),
                         bind_window_handle=int(info[5], 16),
-                        pid=int(info[5])
+                        pid=int(info[6])  # PID is at index 6, not 5
                     )
                 )
             return emulators
@@ -78,6 +81,50 @@ class NoxPlayer:
                 time.sleep(1)
     
     @staticmethod
-    def adb(emulator_id: int, cmd: str):
-        return nox("adb", f"-index:{emulator_id}", f'-command:"{cmd}"')
+    def adb(*args):
+        # TODO: matching device with emulator id
+        return subprocess.run(["adb", *args], check=True)
     
+    @staticmethod
+    def click(emulator_info: EmulatorInfo, x: int, y: int):
+        # TODO: use pywin32 to click directly on the window
+        try:
+            NoxPlayer.adb("shell", "input", "tap", str(x), str(y))
+        except Exception as e:
+            logging.error(f"Failed to click at ({x}, {y}) on Nox instance {emulator_info.id}: {e}")
+
+    @staticmethod
+    def tap_and_hold(emulator_info: EmulatorInfo, x: int, y: int, duration_ms: int):
+        """Hold touch at position for specified duration using direct win32 input.
+
+        Args:
+            emulator_info: The emulator to send the command to
+            x: X coordinate to hold (in emulator coordinates)
+            y: Y coordinate to hold (in emulator coordinates)
+            duration_ms: Duration to hold in milliseconds
+
+        Note: Uses win32api to send mouse events directly to the window, bypassing ADB
+        """
+        try:
+            hwnd = emulator_info.top_window_handle
+
+            # Convert emulator coordinates to window coordinates (accounting for window chrome)
+            # Nox has a 2px left border and 32px top border (title bar)
+            window_x = x + 2
+            window_y = y + 32
+
+            # Create lParam for PostMessage (x in low word, y in high word)
+            lParam = win32api.MAKELONG(window_x, window_y)
+
+            # Send mouse down event
+            win32api.PostMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lParam)
+
+            # Hold for duration
+            time.sleep(duration_ms / 1000.0)
+
+            # Send mouse up event
+            win32api.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lParam)
+
+        except Exception as e:
+            logging.error(f"Failed to hold at ({x}, {y}) for {duration_ms}ms on Nox instance {emulator_info.id}: {e}")
+            

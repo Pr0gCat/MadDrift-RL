@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project specific
+checkpoints/
+wandb/
+.vscode/
+screenshot_playing.png
+model_test.py
+test_gameover_guard.py
