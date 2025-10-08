@@ -4,41 +4,62 @@ import pytesseract
 
 # Hardcoded floor colors (4 themes in the game)
 FLOOR_COLORS = np.array([
-    [252, 230, 67],   # Yellow
+    [255, 233,  68],   # Yellow
     [253, 253, 253],  # White
     [172, 116, 197],  # Purple
     [105, 237, 237]   # Cyan
 ], dtype=np.uint8)
 
-def locate(image: np.ndarray, template: np.ndarray, threshold: float = 0.8):
+def locate(image: np.ndarray, template: np.ndarray, threshold: float = 0.8, multi_scale: bool = True):
     """
     Find the position of a template image within a larger image using template matching.
+    Supports multi-scale matching to handle different window resolutions/DPI settings.
 
     Args:
         image: Screenshot image as numpy array
         template: Sprite/template to find as numpy array
         threshold: Confidence threshold (0.0 to 1.0), default 0.8
+        multi_scale: If True, try multiple scales (0.7x to 1.3x) for robustness
 
     Returns:
         tuple: (x, y, confidence) of the center position if found, None otherwise
     """
-    # Perform template matching
-    result = cv2.matchTemplate(image, template, cv2.TM_CCOEFF_NORMED)
+    best_match = None
+    best_confidence = threshold
 
-    # Find the best match
-    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+    # Define scale range for multi-scale matching
+    scales = np.linspace(0.7, 1.3, 13) if multi_scale else [1.0]
 
-    if max_val >= threshold:
-        # Get template dimensions
-        h, w = template.shape[:2]
+    for scale in scales:
+        # Resize template to current scale
+        if scale != 1.0:
+            scaled_w = int(template.shape[1] * scale)
+            scaled_h = int(template.shape[0] * scale)
+            # Skip if scaled template is larger than image
+            if scaled_h > image.shape[0] or scaled_w > image.shape[1]:
+                continue
+            scaled_template = cv2.resize(template, (scaled_w, scaled_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            scaled_template = template
 
-        # Calculate center position
-        center_x = max_loc[0] + w // 2
-        center_y = max_loc[1] + h // 2
+        # Perform template matching
+        result = cv2.matchTemplate(image, scaled_template, cv2.TM_CCOEFF_NORMED)
 
-        return (center_x, center_y, max_val)
+        # Find the best match for this scale
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
-    return None
+        if max_val > best_confidence:
+            # Get template dimensions
+            h, w = scaled_template.shape[:2]
+
+            # Calculate center position
+            center_x = max_loc[0] + w // 2
+            center_y = max_loc[1] + h // 2
+
+            best_match = (center_x, center_y, max_val)
+            best_confidence = max_val
+
+    return best_match
 
 def ocr(image: np.ndarray) -> str:
     """
@@ -125,6 +146,11 @@ def normalize_observation(rgb_image: np.ndarray, floor_color: np.ndarray, car_co
     car_diff = np.sqrt(np.sum((rgb_image.astype(np.float32) - car_color.astype(np.float32)) ** 2, axis=2))
     car_mask = car_diff < car_tolerance
 
+    # Restrict car mask to bottom 10% of the image
+    height = rgb_image.shape[0]
+    bottom_start = int(height * 0.8)  # Start of bottom 10%
+    car_mask[:bottom_start, :] = False  # Zero out everything above bottom 10%
+
     # Morphological operations to clean up masks
     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
@@ -135,7 +161,7 @@ def normalize_observation(rgb_image: np.ndarray, floor_color: np.ndarray, car_co
     floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_OPEN, kernel_open)
     floor_mask = cv2.dilate(floor_mask, kernel_dilate, iterations=1)
 
-    # Clean car mask
+    # Clean car mask (morphology after restricting to bottom region)
     car_mask = cv2.morphologyEx(car_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel_close)
     car_mask = cv2.morphologyEx(car_mask, cv2.MORPH_OPEN, kernel_open)
 

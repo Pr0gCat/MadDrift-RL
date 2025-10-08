@@ -16,7 +16,7 @@ from mad_drift_rl.models.agent_model import AgentModel
 
 console = Console()
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(message)s",
     handlers=[RichHandler(console=console, rich_tracebacks=True, show_time=False)]
 )
@@ -29,7 +29,7 @@ class PPOConfig:
     clip_epsilon: float = 0.2
     epochs_per_batch: int = 10
     mini_batch_size: int = 64
-    episodes_per_batch: int = 1
+    episodes_per_batch: int = 10
     max_grad_norm: float = 0.5
     entropy_coef: float = 0.01
     value_loss_coef: float = 0.5
@@ -111,12 +111,13 @@ class Trainer:
         # Initialize environment and model
         self.env = MadDriftEnv(self.emulator)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = AgentModel(feature_dim=128, n_latent=16, n_layer=2).to(self.device)
+        # n_latent = 208 (16x13 spatial patches from deeper CNN)
+        self.model = AgentModel(feature_dim=128, n_latent=208, n_layer=2).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=config.learning_rate)
 
         # Initialize model with dummy input to setup lazy layers
         dummy_obs = torch.zeros(1, 2, 133, 108).to(self.device)
-        dummy_memory = torch.zeros(1, 16, 128).to(self.device)
+        dummy_memory = torch.zeros(1, 208, 128).to(self.device)
         with torch.no_grad():
             self.model(dummy_obs, dummy_memory)
 
@@ -165,6 +166,8 @@ class Trainer:
                 memory_state = memory_state.detach()  # Detach to prevent memory leak
                 inference_time = time_module.time() - inference_start
                 inference_times.append(inference_time)
+
+                # Sample action from policy
                 action_probs = torch.softmax(action_logits, dim=-1)
                 action_dist = torch.distributions.Categorical(action_probs)
                 action = action_dist.sample()
@@ -175,14 +178,17 @@ class Trainer:
 
                 # Add Gaussian noise for exploration
                 noise = torch.randn_like(interval) * self.config.interval_noise_std
-                interval_noisy = torch.clamp(interval + noise, 0.0, 0.1)  # Clamp to [0, 0.1]
+                interval_noisy = torch.clamp(interval + noise, 0.0, 0.05)  # Clamp to [0, 0.05]
 
             action_value = action.item()
             interval_value = interval_noisy.item()
             action_name = ActionSpace(action_value).name
-            logging.info(f"Action: {action_name}, Interval: {interval_value:.3f}s, Inference: {inference_time*1000:.2f}ms")
 
+            action_start = time_module.time()
             reward, next_obs, done, info = self.env.step(ActionSpace(action_value), interval_value)
+            action_duration = time_module.time() - action_start
+
+            logging.info(f"Action: {action_name}, Interval: {interval_value:.3f}s, Inference: {inference_time*1000:.2f}ms, Duration: {action_duration:.3f}s")
 
             # Visualize observation AFTER step (only if not done, to avoid showing game over screen)
             # Note: we visualize the observation that was used to make the decision

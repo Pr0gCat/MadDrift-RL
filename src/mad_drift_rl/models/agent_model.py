@@ -42,21 +42,50 @@ class RecurrentTransformer(nn.Module):
         return x, updated_memory
 
 class AgentModel(nn.Module):
-    def __init__(self, feature_dim: int = 128, n_latent: int = 16, n_layer: int = 2):
+    def __init__(self, feature_dim: int = 128, n_latent: int = 180, n_layer: int = 2):
         super(AgentModel, self).__init__()
 
         self.feature_dim = feature_dim
         self.n_latent = n_latent
 
-        self.visual_encoder = nn.Sequential(
-            nn.Conv2d(2, 32, kernel_size=8, stride=4),
+        # Visual backbone: Deeper Conv layers for better feature extraction
+        # Input: (batch, 2, 133, 108)
+        # Calculate output size: Let's work backwards from desired 15x12 = 180 patches
+        self.visual_backbone = nn.Sequential(
+            # Layer 1: Initial feature extraction
+            # 133 → (133-8+4)/4+1 = 33.25 → 33, 108 → (108-8+4)/4+1 = 27
+            nn.Conv2d(2, 32, kernel_size=8, stride=4, padding=2),  # → (batch, 32, 33, 27)
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+
+            # Layer 2: More features
+            # 33 → (33-4+2)/2+1 = 16.5 → 16, 27 → (27-4+2)/2+1 = 13.5 → 13
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),  # → (batch, 64, 16, 13)
+            nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.Flatten(start_dim=1),
-            nn.LazyLinear(feature_dim),
-            nn.ReLU()
+
+            # Layer 3: Deeper features (same size)
+            nn.Conv2d(64, 96, kernel_size=3, stride=1, padding=1),  # → (batch, 96, 16, 13)
+            nn.BatchNorm2d(96),
+            nn.ReLU(),
+
+            # Layer 4: Abstract features (same size)
+            nn.Conv2d(96, 128, kernel_size=3, stride=1, padding=1),  # → (batch, 128, 16, 13)
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+
+            # Layer 5: Refine features (same size)
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),  # → (batch, 128, 16, 13)
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
         )
+
+        # Project each patch from 128 channels to feature_dim
+        self.patch_projection = nn.Linear(128, feature_dim)
+
+        # Learnable positional embeddings for 208 spatial patches (16×13)
+        self.n_patches = 16 * 13  # 208 patches
+        self.pos_embedding = nn.Parameter(torch.randn(1, self.n_patches, feature_dim))
 
         self.recurrent_transformer = nn.ModuleList([
             RecurrentTransformer(feature_dim=feature_dim)
@@ -86,22 +115,26 @@ class AgentModel(nn.Module):
 
 
     def forward(self, x: torch.Tensor, memory_latents: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        # x: (batch, 1, height, width)
-        # memory_latents: (batch, n_latent, feature_dim)
+        # x: (batch, 2, height, width) - (batch, 2, 133, 108)
+        # memory_latents: (batch, n_latent, feature_dim) - (batch, n_patches, feature_dim)
 
-        # Encode visual features
-        visual_features = self.visual_encoder(x)  # (batch, feature_dim)
+        # Extract spatial features from visual backbone
+        spatial_features = self.visual_backbone(x)  # (batch, 128, 16, 13)
 
-        # Reshape to (batch, 1, feature_dim) for transformer
-        current_latents = visual_features.unsqueeze(1)  # (batch, 1, feature_dim)
+        # Reshape to patch tokens: (batch, 128, 16, 13) → (batch, 208, 128)
+        batch_size = x.shape[0]
+        patches = spatial_features.flatten(2).transpose(1, 2)  # (batch, 16*13, 128) = (batch, 208, 128)
+
+        # Project patches to feature_dim and add positional embeddings
+        current_latents = self.patch_projection(patches) + self.pos_embedding  # (batch, n_patches, feature_dim)
 
         # Pass through recurrent transformer layers
         updated_memory = memory_latents
         for layer in self.recurrent_transformer:
             current_latents, updated_memory = layer(current_latents, updated_memory)
 
-        # Pool current latents for heads (take the single latent)
-        pooled_features = current_latents.squeeze(1)  # (batch, feature_dim)
+        # Pool current latents for heads (mean pooling across spatial tokens)
+        pooled_features = current_latents.mean(dim=1)  # (batch, feature_dim)
 
         # Compute action logits and value
         action_logits = self.action_head(pooled_features)  # (batch, 3)

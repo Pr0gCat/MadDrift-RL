@@ -16,10 +16,52 @@ class EmulatorInfo:
     toolbar_window_handle: int
     bind_window_handle: int
     pid: int
-    
+
     @property
     def is_running(self):
         return self.pid > 0
+
+    def get_window_borders(self) -> tuple[int, int]:
+        """Get the actual window border offsets (left, top) for this emulator.
+
+        Returns:
+            tuple: (left_border, top_border) in pixels
+        """
+        import win32gui
+        window_rect = win32gui.GetWindowRect(self.top_window_handle)
+        screen_point = win32gui.ClientToScreen(self.top_window_handle, (0, 0))
+
+        left_border = screen_point[0] - window_rect[0]
+        top_border = screen_point[1] - window_rect[1]
+
+        return (left_border, top_border)
+
+    def get_android_resolution(self) -> tuple[int, int]:
+        """Get the internal Android resolution via ADB.
+
+        Returns:
+            tuple: (width, height) of Android display in pixels
+        """
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["adb", "shell", "wm", "size"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=2
+            )
+            # Parse output like "Physical size: 540x960"
+            for line in result.stdout.split('\n'):
+                if 'Physical size:' in line:
+                    size_str = line.split(':')[1].strip()
+                    width, height = map(int, size_str.split('x'))
+                    return (width, height)
+        except Exception as e:
+            logging.warning(f"Failed to get Android resolution via ADB: {e}")
+
+        # Fallback to common Nox default
+        return (540, 960)
 
 class NoxPlayer:
     @staticmethod
@@ -87,42 +129,79 @@ class NoxPlayer:
     
     @staticmethod
     def click(emulator_info: EmulatorInfo, x: int, y: int):
-        # TODO: use pywin32 to click directly on the window
+        """Click at position using win32 PostMessage (fast, non-blocking).
+
+        Args:
+            emulator_info: The emulator to send the command to
+            x: X coordinate to click (in screenshot coordinates)
+            y: Y coordinate to click (in screenshot coordinates)
+        """
         try:
-            NoxPlayer.adb("shell", "input", "tap", str(x), str(y))
+            hwnd = emulator_info.top_window_handle
+
+            # Get window client size to account for DPI scaling
+            import win32gui
+            rect = win32gui.GetClientRect(hwnd)
+            window_width = rect[2] - rect[0]
+            window_height = rect[3] - rect[1]
+
+            # Get Android resolution
+            android_width, android_height = emulator_info.get_android_resolution()
+
+            # Scale from screenshot coordinates (window size) to Android coordinates
+            # This handles Windows DPI scaling (e.g., 150% = 448x795 window showing 540x960 content)
+            android_x = int(x * android_width / window_width)
+            android_y = int(y * android_height / window_height)
+
+            logging.debug(f"Click: screenshot ({x}, {y}) -> Android ({android_x}, {android_y})")
+
+            # Create lParam for PostMessage
+            lParam = win32api.MAKELONG(android_x, android_y)
+
+            # Send mouse events - fast and non-blocking
+            win32api.PostMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lParam)
+            win32api.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lParam)
+
         except Exception as e:
             logging.error(f"Failed to click at ({x}, {y}) on Nox instance {emulator_info.id}: {e}")
 
     @staticmethod
     def tap_and_hold(emulator_info: EmulatorInfo, x: int, y: int, duration_ms: int):
-        """Hold touch at position for specified duration using direct win32 input.
+        """Hold touch at position for specified duration using win32 PostMessage.
 
         Args:
             emulator_info: The emulator to send the command to
-            x: X coordinate to hold (in emulator coordinates)
-            y: Y coordinate to hold (in emulator coordinates)
+            x: X coordinate to hold (in screenshot coordinates)
+            y: Y coordinate to hold (in screenshot coordinates)
             duration_ms: Duration to hold in milliseconds
-
-        Note: Uses win32api to send mouse events directly to the window, bypassing ADB
         """
         try:
             hwnd = emulator_info.top_window_handle
 
-            # Convert emulator coordinates to window coordinates (accounting for window chrome)
-            # Nox has a 2px left border and 32px top border (title bar)
-            window_x = x + 2
-            window_y = y + 32
+            # Get window client size to account for DPI scaling
+            import win32gui
+            rect = win32gui.GetClientRect(hwnd)
+            window_width = rect[2] - rect[0]
+            window_height = rect[3] - rect[1]
 
-            # Create lParam for PostMessage (x in low word, y in high word)
-            lParam = win32api.MAKELONG(window_x, window_y)
+            # Get Android resolution
+            android_width, android_height = emulator_info.get_android_resolution()
 
-            # Send mouse down event
+            # Scale from screenshot coordinates (window size) to Android coordinates
+            # This handles Windows DPI scaling (e.g., 150% = 448x795 window showing 540x960 content)
+            android_x = int(x * android_width / window_width)
+            android_y = int(y * android_height / window_height)
+
+            # Create lParam for PostMessage
+            lParam = win32api.MAKELONG(android_x, android_y)
+
+            # Send mouse down
             win32api.PostMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lParam)
 
             # Hold for duration
             time.sleep(duration_ms / 1000.0)
 
-            # Send mouse up event
+            # Send mouse up
             win32api.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lParam)
 
         except Exception as e:
