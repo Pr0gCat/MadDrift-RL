@@ -1,17 +1,13 @@
+# Mad Drift RL Agent (Halted)
+
+> Mad Drift suffers from memory leak issues on emulators after prolonged use, leading to instability/crashes during training.
 
 ## Design
 
 An RL agent that plays Mad Drift, an Android racing game, using image recognition and ADB commands. It makes an action every 150ms when the game is running at 30FPS.
 
-
-
 The agent uses PPO (Proximal Policy Optimization) with a CNN based vision encoder + Recurrent Transformer Encoder to learn the optimal policy for controlling the car in the game. The state space consists of the game screen, which is processed using image recognition to extract relevant features. The action space consists of discrete actions such as steering left or right and do nothing.
-```mermaid
-flowchart LR
-    A([Start]) --> B[Agent play a game and collect states]
-    B --> C[Train the model with collected states]
-    C --> B
-```
+
 
 ## Setup
 

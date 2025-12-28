@@ -27,8 +27,8 @@ class MadDriftEnv:
 
         # Get window size (DPI-scaled version of Android resolution)
         rect = win32gui.GetClientRect(self.emulator.top_window_handle)
-        self.width = rect[2] - rect[0] - 42
-        self.height = rect[3] - rect[1] - 42
+        self.width = rect[2] - rect[0] -2
+        self.height = rect[3] - rect[1] -32
 
         # Get window border offsets (varies by DPI/theme)
         self.border_left, self.border_top = emulator.get_window_borders()
@@ -74,6 +74,13 @@ class MadDriftEnv:
         # Theme color storage for normalization
         self.floor_color = None
         self.car_color = None
+
+        # Button position and color caching for fast detection
+        self.replay_btn_pos = None
+        self.replay_btn_color = None
+        self.skip_btn_pos = None
+        self.skip_btn_color = None
+        self.calibrated = False
     
     def __del__(self):
         # Clean up resources
@@ -163,9 +170,8 @@ class MadDriftEnv:
     def find_skip_button(self, screenshot: np.ndarray) -> tuple[Any, Any, float] | None:
         # Convert RGB screenshot to BGR for template matching (templates are loaded with cv2.imread in BGR)
         screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
-        # Templates are pre-scaled to match window DPI, so no multi-scale needed
         # Use lower threshold for skip button - it may vary more in appearance
-        result = locate(screenshot_bgr, self.skip_btn_template, threshold=0.7, multi_scale=False)
+        result = locate(screenshot_bgr, self.skip_btn_template, threshold=0.7, multi_scale=True)
         if result:
             # Template matching returns center of template, adjust to click lower on the button
             x, y, confidence = result
@@ -180,8 +186,7 @@ class MadDriftEnv:
     def is_game_over(self, screenshot: np.ndarray) -> tuple[Any, Any, float] | None:
         # Convert RGB screenshot to BGR for template matching (templates are loaded with cv2.imread in BGR)
         screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
-        # Templates are pre-scaled to match window DPI, so no multi-scale needed
-        result = locate(screenshot_bgr, self.replay_btn_template, threshold=0.8, multi_scale=False)
+        result = locate(screenshot_bgr, self.replay_btn_template, threshold=0.8, multi_scale=True)
         if result:
             logging.info(f"Replay button found at ({result[0]}, {result[1]}) with confidence {result[2]:.3f}")
         else:
@@ -205,6 +210,108 @@ class MadDriftEnv:
             gray = cv2.cvtColor(resized_rgb, cv2.COLOR_RGB2GRAY)
             return gray.astype(np.float32) / 255.0
     
+    def calibrate_buttons(self):
+        """Calibrate button positions and colors for fast detection.
+
+        Should be called when game is at game over screen.
+        Sequence:
+        1. Sample replay button color (game over screen)
+        2. Click replay to start game
+        3. Wait for skip button to appear
+        4. Sample skip button color
+        5. Click skip
+        """
+        logging.info("Calibrating button positions and colors...")
+
+        # Step 1: Sample replay button
+        screenshot = self.get_screenshot()
+        
+        screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
+        replay_result = locate(screenshot_bgr, self.replay_btn_template, threshold=0.8, multi_scale=True)
+
+        if not replay_result:
+            raise RuntimeError("Failed to locate replay button for calibration")
+
+        self.replay_btn_pos = (replay_result[0], replay_result[1])
+        self.replay_btn_color = screenshot[self.replay_btn_pos[1], self.replay_btn_pos[0]]
+        logging.info(f"Replay button: pos={self.replay_btn_pos}, color={self.replay_btn_color}")
+
+        # Step 2: Click replay to start game
+        self.click(replay_result[0], replay_result[1])
+        time.sleep(0.5)
+
+        # Step 3: Wait for skip button to appear (timeout 10 seconds)
+        skip_found = False
+        start_time = time.time()
+        while time.time() - start_time < 10.0:
+            screenshot = self.get_screenshot()
+            screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
+            skip_result = locate(screenshot_bgr, self.skip_btn_template, threshold=0.7, multi_scale=True)
+
+            if skip_result:
+                # Adjust Y position for better clicking (same as find_skip_button)
+                adjusted_y = skip_result[1] + int(10 * (self.height / 795.0))
+                self.skip_btn_pos = (skip_result[0], adjusted_y)
+                self.skip_btn_color = screenshot[adjusted_y, skip_result[0]]
+                logging.info(f"Skip button: pos={self.skip_btn_pos}, color={self.skip_btn_color}")
+                skip_found = True
+                break
+
+            cv2.waitKey(1)  # Process GUI events to prevent freezing
+            time.sleep(0.1)
+
+        if not skip_found:
+            raise RuntimeError("Failed to locate skip button for calibration")
+
+        # Step 4: Click skip
+        self.click(self.skip_btn_pos[0], self.skip_btn_pos[1])
+        time.sleep(0.1)
+
+        # Mark as calibrated now so we can use fast checks
+        self.calibrated = True
+
+        # Wait for game over screen again
+        while True:
+            logging.info("Waiting for game over screen to reappear...")
+            screenshot = self.get_screenshot()
+            if self._check_game_over_fast(screenshot):
+                break
+            time.sleep(0.1)
+
+        logging.info("Button calibration complete!")
+
+    def _check_game_over_fast(self, screenshot: np.ndarray) -> bool:
+        """Fast game over check using cached position and color, with template matching verification."""
+        if not self.calibrated:
+            return False
+
+        # Sample pixel at cached position
+        pixel_color = screenshot[self.replay_btn_pos[1], self.replay_btn_pos[0]]
+
+        # Check if color matches (with strict tolerance)
+        color_diff = np.abs(pixel_color.astype(np.int32) - self.replay_btn_color.astype(np.int32))
+        color_match = np.all(color_diff <= 5)  # Allow ±5 RGB difference (tighter tolerance)
+
+        # If color matches, double-check with template matching to avoid false positives
+        if color_match:
+            screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
+            result = locate(screenshot_bgr, self.replay_btn_template, threshold=0.8, multi_scale=True)
+            return result is not None
+
+        return False
+
+    def _check_skip_button_fast(self, screenshot: np.ndarray) -> bool:
+        """Fast skip button check using cached position and color."""
+        if not self.calibrated:
+            return False
+
+        # Sample pixel at cached position
+        pixel_color = screenshot[self.skip_btn_pos[1], self.skip_btn_pos[0]]
+
+        # Check if color matches (with strict tolerance)
+        color_diff = np.abs(pixel_color.astype(np.int32) - self.skip_btn_color.astype(np.int32))
+        return np.all(color_diff <= 5)  # Allow ±5 RGB difference (tighter tolerance)
+
     def wait_for_game_over(self, timeout: float = 60.0):
         """Wait for the game to reach game over screen"""
         import time as time_module
@@ -221,8 +328,8 @@ class MadDriftEnv:
         while True:
             screenshot = self.get_screenshot()
 
-            if replay_btn_pos := self.is_game_over(screenshot):
-                self.click(replay_btn_pos[0], replay_btn_pos[1])
+            if self._check_game_over_fast(screenshot):
+                self.click(self.replay_btn_pos[0], self.replay_btn_pos[1])
                 # Wait for game to start and car to appear for color sampling
                 time.sleep(0.5)
                 self.current_step = 0
@@ -246,6 +353,7 @@ class MadDriftEnv:
 
                 # Return first observation with normalization
                 return self.make_observation(screenshot)
+            cv2.waitKey(1)  # Process GUI events to prevent freezing
             time.sleep(0.1)
 
                 
@@ -267,23 +375,24 @@ class MadDriftEnv:
 
         # Check for skip button first (appears before replay button after crash)
         t2 = time_module.time()
-        if skip_btn_pos := self.find_skip_button(screenshot):
-            logging.debug(f"  find_skip_button: {(time_module.time() - t2)*1000:.2f}ms (found)")
-            self.click(skip_btn_pos[0], skip_btn_pos[1])
+        if self._check_skip_button_fast(screenshot):
+            logging.debug(f"  check_skip_button: {(time_module.time() - t2)*1000:.2f}ms (found)")
+            time.sleep(0.5)  # Wait before clicking skip
+            self.click(self.skip_btn_pos[0], self.skip_btn_pos[1])
             time.sleep(0.1)
             # Update screenshot after clicking skip
             screenshot = self.get_screenshot()
-            while not self.is_game_over(screenshot):
+            while not self._check_game_over_fast(screenshot):
                 time.sleep(0.1)
                 screenshot = self.get_screenshot()
         else:
-            logging.debug(f"  find_skip_button: {(time_module.time() - t2)*1000:.2f}ms (not found)")
+            logging.debug(f"  check_skip_button: {(time_module.time() - t2)*1000:.2f}ms (not found)")
 
         # Check if game over (replay button visible)
         # IMPORTANT: Return early with None observation to prevent game over UI from entering training data
         t3 = time_module.time()
-        if self.is_game_over(screenshot):
-            logging.debug(f"  is_game_over: {(time_module.time() - t3)*1000:.2f}ms (game over)")
+        if self._check_game_over_fast(screenshot):
+            logging.debug(f"  check_game_over: {(time_module.time() - t3)*1000:.2f}ms (game over)")
             # take score (use percentage-based region)
             scaled_score_region = self._scale_region(SCORE_REGION_PCT)
             score_region = screenshot[
@@ -330,23 +439,24 @@ class MadDriftEnv:
 
         # Check for skip button (appears after crash)
         t6 = time_module.time()
-        if skip_btn_pos := self.find_skip_button(screenshot_after_action):
-            logging.debug(f"  find_skip_button_after: {(time_module.time() - t6)*1000:.2f}ms (found)")
-            self.click(skip_btn_pos[0], skip_btn_pos[1])
+        if self._check_skip_button_fast(screenshot_after_action):
+            logging.debug(f"  check_skip_button_after: {(time_module.time() - t6)*1000:.2f}ms (found)")
+            time.sleep(0.5)  # Wait before clicking skip
+            self.click(self.skip_btn_pos[0], self.skip_btn_pos[1])
             time.sleep(0.1)
             # Wait for replay button to appear
             while True:
                 screenshot_after_action = self.get_screenshot()
-                if self.is_game_over(screenshot_after_action):
+                if self._check_game_over_fast(screenshot_after_action):
                     break
                 time.sleep(0.1)
         else:
-            logging.debug(f"  find_skip_button_after: {(time_module.time() - t6)*1000:.2f}ms (not found)")
+            logging.debug(f"  check_skip_button_after: {(time_module.time() - t6)*1000:.2f}ms (not found)")
 
         # Check if game over (replay button visible)
         t7 = time_module.time()
-        if self.is_game_over(screenshot_after_action):
-            logging.debug(f"  is_game_over_after: {(time_module.time() - t7)*1000:.2f}ms (game over)")
+        if self._check_game_over_fast(screenshot_after_action):
+            logging.debug(f"  check_game_over_after: {(time_module.time() - t7)*1000:.2f}ms (game over)")
             # take score (use percentage-based region)
             scaled_score_region = self._scale_region(SCORE_REGION_PCT)
             score_region = screenshot_after_action[

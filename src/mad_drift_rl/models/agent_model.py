@@ -49,7 +49,7 @@ class AgentModel(nn.Module):
         self.n_latent = n_latent
 
         # Visual backbone: Deeper Conv layers for better feature extraction
-        # Input: (batch, 2, 133, 108)
+        # Input: (batch, 2, 133, 108) - Channel 0: car, Channel 1: environment
         # Calculate output size: Let's work backwards from desired 15x12 = 180 patches
         self.visual_backbone = nn.Sequential(
             # Layer 1: Initial feature extraction

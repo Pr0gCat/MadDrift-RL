@@ -16,7 +16,7 @@ from mad_drift_rl.models.agent_model import AgentModel
 
 console = Console()
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(message)s",
     handlers=[RichHandler(console=console, rich_tracebacks=True, show_time=False)]
 )
@@ -173,15 +173,8 @@ class Trainer:
                 action = action_dist.sample()
                 log_prob = action_dist.log_prob(action)
 
-                # Compute action interval using cached pooled features
-                interval = self.model.get_interval(pooled_features, action)
-
-                # Add Gaussian noise for exploration
-                noise = torch.randn_like(interval) * self.config.interval_noise_std
-                interval_noisy = torch.clamp(interval + noise, 0.0, 0.05)  # Clamp to [0, 0.05]
-
             action_value = action.item()
-            interval_value = interval_noisy.item()
+            interval_value = 0.0
             action_name = ActionSpace(action_value).name
 
             action_start = time_module.time()
@@ -195,34 +188,32 @@ class Trainer:
             if not done:
                 # obs shape: (133, 108, 2) - channel 0 is car, channel 1 is environment
                 car_channel = obs[:, :, 0]  # (133, 108) binary car mask
-                env_channel = obs[:, :, 1]  # (133, 108) environment grayscale
+                env_channel = obs[:, :, 1]  # (133, 108) binary environment
 
-                # Create RGB visualization: Bright green for car, White for environment
+                # Create RGB visualization: Green for car, White for environment
                 obs_display = np.zeros((133, 108, 3), dtype=np.float32)
 
-                # Create car mask (boolean)
+                # Car = green, Environment = white
                 car_mask = car_channel > 0.5
-
-                # Set environment to white (where there's no car)
-                obs_display[:, :, 0] = np.where(car_mask, 0, env_channel)  # Red = environment only
-                obs_display[:, :, 1] = np.where(car_mask, 1.0, env_channel)  # Green = car (full intensity) or environment
-                obs_display[:, :, 2] = np.where(car_mask, 0, env_channel)  # Blue = environment only
+                obs_display[:, :, 0] = env_channel  # Red = environment
+                obs_display[:, :, 1] = np.where(car_mask, 1.0, env_channel)  # Green = car or environment
+                obs_display[:, :, 2] = env_channel  # Blue = environment
 
                 # Convert to uint8 and resize
                 obs_display = (obs_display * 255).astype(np.uint8)
                 # Resize to match original game view aspect ratio (540x665, cropped from screenshot[90:755, :])
                 obs_display = cv2.resize(obs_display, (540, 665), interpolation=cv2.INTER_NEAREST)
 
-                # Add action text with interval
+                # Add action text with interval in green
                 cv2.putText(obs_display, f"Action: {action_name}", (20, 40),
                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
                 cv2.putText(obs_display, f"Interval: {interval_value:.3f}s", (20, 80),
                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+
                 cv2.imshow("Agent View", obs_display)
                 cv2.waitKey(1)
 
             # Store transition temporarily (will add to memory after episode completes)
-            # Store the ORIGINAL interval (without noise) for training
             episode_transitions.append({
                 'obs_tensor': obs_tensor.cpu().numpy(),
                 'action': action.item(),
@@ -231,7 +222,7 @@ class Trainer:
                 'log_prob': log_prob.item(),
                 'done': done,
                 'memory_state': memory_state.cpu().numpy(),
-                'interval': interval.item()  # Store original interval (without noise)
+                'interval': 0.0
             })
 
             episode_reward += reward
@@ -422,6 +413,11 @@ class Trainer:
         avg_score = 0  # Initialize for early interruption handling
 
         try:
+            # Calibrate button positions before first episode
+            logging.info("Calibrating button detection system...")
+            self.env.calibrate_buttons()
+            logging.info("Calibration complete, starting training!")
+
             while True:
                 # Collect episodes
                 episode_rewards = []

@@ -116,7 +116,7 @@ def normalize_observation(rgb_image: np.ndarray, floor_color: np.ndarray, car_co
     Normalize RGB observation to be invariant to environment theme changes.
 
     This function:
-    1. Removes floor pixels in RGB space (sets to black) using closest hardcoded floor color
+    1. Removes floor pixels in HSV space (sets to black) using closest hardcoded floor color
     2. Creates binary car mask and environment channel separately
     3. Uses morphological operations to clean up the masks
     4. Returns 2-channel output: [car_mask, environment]
@@ -131,16 +131,29 @@ def normalize_observation(rgb_image: np.ndarray, floor_color: np.ndarray, car_co
         - Channel 0: Binary car mask (1.0 for car, 0.0 elsewhere)
         - Channel 1: Environment (CLAHE-normalized grayscale with floor removed, car pixels set to 0.0)
     """
-    # Calculate color distance from floor and car colors
-    floor_tolerance = 50  # Tolerance for floor color matching in RGB space
-    car_tolerance = 40    # Tolerance for car color matching in RGB space
-
     # Use closest hardcoded floor color
     floor_color = get_closest_floor_color(floor_color)
 
-    # Create floor mask: pixels similar to floor color
-    floor_diff = np.sqrt(np.sum((rgb_image.astype(np.float32) - floor_color.astype(np.float32)) ** 2, axis=2))
-    floor_mask = floor_diff < floor_tolerance
+    # Convert RGB to HSV for better shadow handling
+    hsv_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2HSV)
+    floor_color_bgr = cv2.cvtColor(np.uint8([[floor_color]]), cv2.COLOR_RGB2BGR)
+    floor_hsv = cv2.cvtColor(floor_color_bgr, cv2.COLOR_BGR2HSV)[0, 0]
+    car_color_bgr = cv2.cvtColor(np.uint8([[car_color]]), cv2.COLOR_RGB2BGR)
+    car_hsv = cv2.cvtColor(car_color_bgr, cv2.COLOR_BGR2HSV)[0, 0]
+
+    # HSV tolerances (more lenient on V for shadows, strict on H for color)
+    h_tolerance = 15  # Hue tolerance (out of 180 in OpenCV)
+    s_tolerance = 80  # Saturation tolerance (out of 255)
+    v_tolerance = 100  # Value tolerance (out of 255) - lenient for shadows
+    car_tolerance = 40  # Car uses RGB space (better for specific color matching)
+
+    # Create floor mask in HSV space (handles shadows better)
+    h_diff = np.abs(hsv_image[:, :, 0].astype(np.float32) - floor_hsv[0].astype(np.float32))
+    h_diff = np.minimum(h_diff, 180 - h_diff)  # Handle hue wrapping
+    s_diff = np.abs(hsv_image[:, :, 1].astype(np.float32) - floor_hsv[1].astype(np.float32))
+    v_diff = np.abs(hsv_image[:, :, 2].astype(np.float32) - floor_hsv[2].astype(np.float32))
+
+    floor_mask = (h_diff < h_tolerance) & (s_diff < s_tolerance) & (v_diff < v_tolerance)
 
     # Create car mask: pixels similar to car color
     car_diff = np.sqrt(np.sum((rgb_image.astype(np.float32) - car_color.astype(np.float32)) ** 2, axis=2))
@@ -165,23 +178,32 @@ def normalize_observation(rgb_image: np.ndarray, floor_color: np.ndarray, car_co
     car_mask = cv2.morphologyEx(car_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel_close)
     car_mask = cv2.morphologyEx(car_mask, cv2.MORPH_OPEN, kernel_open)
 
-    # Channel 0: Binary car mask [0, 1]
-    car_channel = car_mask.astype(np.float32)
-
-    # Channel 1: Environment (obstacles/walls with floor removed, car pixels set to 0)
+    # Single channel: Binary observation (car and obstacles as white, floor as black)
     normalized_rgb = rgb_image.copy()
     normalized_rgb[floor_mask.astype(bool)] = [0, 0, 0]  # Floor -> black
-    normalized_rgb[car_mask.astype(bool)] = [0, 0, 0]    # Car -> black (will be in separate channel)
 
     # Convert to grayscale
     gray = cv2.cvtColor(normalized_rgb, cv2.COLOR_RGB2GRAY)
 
-    # Apply CLAHE for adaptive contrast normalization on obstacles
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    equalized = clahe.apply(gray)
+    # Create binary mask: anything non-floor becomes white (1.0)
+    # Use threshold to separate obstacles/car from floor
+    _, binary = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
 
-    # Normalize environment channel to [0, 1] range
-    env_channel = equalized.astype(np.float32) / 255.0
+    # Morphological opening: erode then dilate to remove noise while preserving shape
+    # Use smaller kernel to be less aggressive
+    kernel_morph = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (1, 1))
+    binary = cv2.erode(binary, kernel_morph, iterations=1)
+    binary = cv2.dilate(binary, kernel_morph, iterations=1)
+
+    # Channel 0: Binary car mask [0, 1]
+    car_channel = car_mask.astype(np.float32)
+
+    # Channel 1: Binary environment (obstacles without car)
+    env_binary = binary.copy()
+    env_binary[car_mask.astype(bool)] = 0  # Remove car from environment channel
+
+    # Normalize environment channel to [0, 1]
+    env_channel = env_binary.astype(np.float32) / 255.0
 
     # Stack channels: (H, W, 2)
     two_channel = np.stack([car_channel, env_channel], axis=-1)

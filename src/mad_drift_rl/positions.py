@@ -16,10 +16,11 @@ CAR_SAMPLE_POINT_PCT = (0.5, 0.72)  # x%, y%
 
 # Floor sampling regions (clean areas without shadows or obstacles)
 # Multiple regions are averaged to get robust floor color estimate
+# Sample from bottom areas only - safe from obstacles and game over panel
 FLOOR_SAMPLE_REGIONS_PCT = [
-    (0.093, 0.208, 0.056, 0.031),  # Top left clean area
-    (0.852, 0.208, 0.056, 0.031),  # Top right clean area
-    (0.500, 0.365, 0.056, 0.031),  # Center clean area
+    (0.200, 0.650, 0.056, 0.031),  # Bottom left area
+    (0.500, 0.650, 0.056, 0.031),  # Bottom center area
+    (0.800, 0.650, 0.056, 0.031),  # Bottom right area
 ]
 
 # Legacy pixel-based values (kept for backward compatibility, based on 540x960)
